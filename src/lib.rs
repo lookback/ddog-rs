@@ -37,7 +37,6 @@ struct Event {
 
 #[derive(Serialize, Clone, Debug)]
 #[allow(non_camel_case_types)]
-#[allow(unused)]
 pub enum AlertType {
     success,
     info,
@@ -142,17 +141,15 @@ impl DDStatsClient {
         }
     }
 
-    #[allow(unused)]
+
     pub fn gauge(&mut self, name: &str, value: f64) {
         self.add_metric(name, value, None, None)
     }
 
-    #[allow(unused)]
     pub fn rate(&mut self, name: &str, value: f64, interval_secs: f64) {
         self.add_metric(name, value, Some(MetricType::rate), Some(interval_secs))
     }
 
-    #[allow(unused)]
     pub fn count(&mut self, name: &str, value: f64, interval_secs: f64) {
         self.add_metric(name, value, Some(MetricType::count), Some(interval_secs))
     }
