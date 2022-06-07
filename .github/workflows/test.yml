@@ -65,3 +65,24 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: test
+
+  build_and_test_async:
+    name: Test
+    runs-on: ubuntu-latest
+    env:
+      RUST_BACKTRACE: "1"
+      RUSTFLAGS: "-D dead_code -D unused-variables -D unused"
+    steps:
+      - uses: actions/checkout@master
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+      # this check is to catch compilation warnings that should be treated as errors
+      # which are not caught if we only rely on the next test step.
+      - name: Check
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --features async

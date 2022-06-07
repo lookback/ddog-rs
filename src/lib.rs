@@ -1,5 +1,12 @@
 use once_cell::sync::{Lazy, OnceCell};
 
+#[cfg(feature = "async")]
+use futures::future;
+#[cfg(feature = "async")]
+use hyper::{client::HttpConnector, Body, Client, Method, Request};
+#[cfg(feature = "async")]
+use hyper_rustls::ConfigBuilderExt;
+
 use serde::Serialize;
 use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::hash::{Hash, Hasher};
@@ -107,6 +114,9 @@ pub struct DDStatsClient {
     tags: Vec<String>,
     host: String,
     fn_millis: Box<dyn FnMut() -> u64 + Send>,
+
+    #[cfg(feature = "async")]
+    http_client: Client<hyper_rustls::HttpsConnector<HttpConnector>>,
 }
 
 fn mangle_safe(s: &str) -> String {
@@ -126,14 +136,47 @@ impl DDStatsClient {
         tags: Vec<String>,
         fn_millis: Box<dyn FnMut() -> u64 + Send>,
     ) -> Self {
-        DDStatsClient {
-            namespace: mangle_safe(namespace),
-            api_key: api_key.into(),
-            metrics: HashMap::new(),
-            events: vec![],
-            host: host.into(),
-            tags,
-            fn_millis,
+        #[cfg(not(feature = "async"))]
+        {
+            DDStatsClient {
+                namespace: mangle_safe(namespace),
+                api_key: api_key.into(),
+                metrics: HashMap::new(),
+                events: vec![],
+                host: host.into(),
+                tags,
+                fn_millis,
+            }
+        }
+
+        #[cfg(feature = "async")]
+        {
+            let tls = rustls::ClientConfig::builder()
+                .with_safe_defaults()
+                .with_native_roots()
+                .with_no_client_auth();
+
+            // Prepare the HTTPS connector
+            let https = hyper_rustls::HttpsConnectorBuilder::new()
+                .with_tls_config(tls)
+                .https_or_http()
+                .enable_http1()
+                .build();
+
+            // Build the hyper client from the HTTPS connector.
+            let http_client: Client<_, hyper::Body> = Client::builder().build(https);
+
+            DDStatsClient {
+                namespace: mangle_safe(namespace),
+                api_key: api_key.into(),
+                metrics: HashMap::new(),
+                events: vec![],
+                host: host.into(),
+                tags,
+                fn_millis,
+
+                http_client,
+            }
         }
     }
 
@@ -203,6 +246,7 @@ impl DDStatsClient {
         self.events.push(e);
     }
 
+    #[cfg(not(feature = "async"))]
     pub fn upload(&mut self) {
         let result = {
             let api_url = format!(
@@ -241,6 +285,68 @@ impl DDStatsClient {
 
             if let Err(err) = result {
                 warn!("Failed to send event ({}): {:?}", e.title, err);
+            }
+        }
+    }
+
+    #[cfg(feature = "async")]
+    pub async fn upload(&mut self) {
+        let result = {
+            let api_url = format!(
+                "https://api.datadoghq.com/api/v1/series?api_key={}",
+                self.api_key
+            );
+            let body =
+                serde_json::to_string(&Series::new(self.metrics.values())).expect("JSON of Series");
+            let req = Request::builder()
+                .method(Method::POST)
+                .uri(&api_url)
+                .body(Body::from(body))
+                .expect("Build request");
+
+            self.http_client.request(req).await
+        };
+
+        if let Err(err) = result {
+            warn!(
+                "Failed to send {} datadog metrics: {:?}",
+                self.metrics.len(),
+                err
+            );
+            // safety guard to not let stats grow indefinitely if we lose
+            // datadog connectivity.
+            for m in self.metrics.values_mut().filter(|m| m.points.len() > 1000) {
+                info!("Dropping metric for: {}", m.metric);
+                m.points.clear();
+            }
+
+            return;
+        }
+
+        let api_url = format!(
+            "https://api.datadoghq.com/api/v1/events?api_key={}",
+            self.api_key
+        );
+
+        let client = self.http_client.clone();
+        let calls = self.events.drain(..).map(|e| {
+            let client = client.clone();
+            let body = serde_json::to_string(&e).expect("JSON of Event");
+            let req = Request::builder()
+                .method(Method::POST)
+                .uri(&api_url)
+                .body(Body::from(body))
+                .expect("Build request");
+
+            (e.title, client.request(req))
+        });
+
+        let (titles, futs): (Vec<_>, Vec<_>) = calls.unzip();
+        let results = future::join_all(futs).await;
+
+        for (title, result) in titles.into_iter().zip(results) {
+            if let Err(err) = result {
+                warn!("Failed to send event ({}): {:?}", title, err);
             }
         }
     }
