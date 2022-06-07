@@ -1,12 +1,45 @@
-use once_cell::sync::Lazy;
+use once_cell::sync::{Lazy, OnceCell};
 
 use serde::Serialize;
 use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::hash::{Hash, Hasher};
+use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[macro_use]
 extern crate lolog;
+
+static GLOBAL_CLIENT: OnceCell<Mutex<DDStatsClient>> = OnceCell::new();
+
+pub fn init_global_client<F>(namespace: &str, api_key: &str, hostname: &str, callback: F)
+where
+    F: FnOnce(&mut DDStatsClient),
+{
+    let mut client = DDStatsClient::new(namespace, api_key, hostname, vec![], Box::new(now_millis));
+    callback(&mut client);
+
+    if GLOBAL_CLIENT.set(Mutex::new(client)).is_err() {
+        panic!("init_global_client should only be called a single time",);
+    }
+}
+
+pub fn add_tag(tag: &str) {
+    let mut ddog = match GLOBAL_CLIENT.get() {
+        Some(c) => c.lock().unwrap(),
+        None => return,
+    };
+
+    let tag_name = tag.find(':').map(|i| &tag[0..i]).unwrap_or(&tag);
+    ddog.add_tag(tag_name);
+}
+
+pub fn send<F: FnOnce(&mut DDStatsClient)>(send: F) {
+    let mut ddog = match GLOBAL_CLIENT.get() {
+        Some(c) => c.lock().unwrap(),
+        None => return,
+    };
+    send(&mut *ddog);
+}
 
 #[derive(Serialize, Clone, Debug, Default)]
 struct Metric {
