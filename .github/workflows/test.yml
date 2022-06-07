@@ -1,0 +1,67 @@
+on: [push, pull_request]
+
+name: CI
+
+concurrency:
+  group: ${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+      - name: Run Rustfmt
+        uses: actions-rs/cargo@v1
+        with:
+          command: fmt
+          args: -- --check
+      - name: Run Clippy
+        uses: actions-rs/cargo@v1
+        with:
+          command: clippy
+  doc:
+    name: Docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@master
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+      - name: Docs
+        uses: actions-rs/cargo@v1
+        with:
+          command: doc
+          args: --no-deps
+
+  build_and_test:
+    name: Test
+    runs-on: ubuntu-latest
+    env:
+      RUST_BACKTRACE: "1"
+      RUSTFLAGS: "-D dead_code -D unused-variables -D unused"
+    steps:
+      - uses: actions/checkout@master
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: 1.46.0
+          override: true
+      # this check is to catch compilation warnings that should be treated as errors
+      # which are not caught if we only rely on the next test step.
+      - name: Check
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+      - name: Test
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
