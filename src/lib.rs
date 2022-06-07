@@ -141,6 +141,10 @@ impl DDStatsClient {
         }
     }
 
+    pub fn add_tag(&mut self, tag: &str) {
+        self.tags.retain(|t| !t.starts_with(tag));
+        self.tags.push(tag.into());
+    }
 
     pub fn gauge(&mut self, name: &str, value: f64) {
         self.add_metric(name, value, None, None)
