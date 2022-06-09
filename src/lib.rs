@@ -48,6 +48,31 @@ pub fn send<F: FnOnce(&mut DDStatsClient)>(send: F) {
     send(&mut *ddog);
 }
 
+#[cfg(all(feature = "async", not(feature = "sync")))]
+pub async fn upload() {
+    let (api_key, client, payload) = {
+        let mut ddog = match GLOBAL_CLIENT.get() {
+            Some(c) => c.lock().unwrap(),
+            None => return,
+        };
+        let payload = ddog.prepare_payload();
+        let client = ddog.http_client.clone();
+        let api_key = ddog.api_key.to_owned();
+
+        (api_key, client, payload)
+    };
+
+    let should_clean = DDStatsClient::upload(&api_key, client, payload).await;
+
+    if should_clean {
+        let mut ddog = match GLOBAL_CLIENT.get() {
+            Some(c) => c.lock().unwrap(),
+            None => return,
+        };
+        ddog.drop_metrics();
+    }
+}
+
 #[derive(Serialize, Clone, Debug, Default)]
 struct Metric {
     metric: String,
@@ -106,6 +131,9 @@ impl<'a> Series<'a> {
     }
 }
 
+#[cfg(feature = "async")]
+type HttpClient = Client<hyper_rustls::HttpsConnector<HttpConnector>>;
+
 pub struct DDStatsClient {
     namespace: String,
     api_key: String,
@@ -116,7 +144,7 @@ pub struct DDStatsClient {
     fn_millis: Box<dyn FnMut() -> u64 + Send>,
 
     #[cfg(feature = "async")]
-    http_client: Client<hyper_rustls::HttpsConnector<HttpConnector>>,
+    http_client: HttpClient,
 }
 
 fn mangle_safe(s: &str) -> String {
@@ -246,7 +274,23 @@ impl DDStatsClient {
         self.events.push(e);
     }
 
-    #[cfg(not(feature = "async"))]
+    fn prepare_payload(&mut self) -> UploadPayload {
+        let metrics = self.metrics.values().cloned().collect();
+        let events = self.events.drain(..).collect();
+
+        UploadPayload { metrics, events }
+    }
+
+    fn drop_metrics(&mut self) {
+        // safety guard to not let stats grow indefinitely if we lose
+        // datadog connectivity.
+        for m in self.metrics.values_mut().filter(|m| m.points.len() > 1000) {
+            info!("Dropping metric for: {}", m.metric);
+            m.points.clear();
+        }
+    }
+
+    #[cfg(all(feature = "sync", not(feature = "async")))]
     pub fn upload(&mut self) {
         let result = {
             let api_url = format!(
@@ -264,12 +308,7 @@ impl DDStatsClient {
                 self.metrics.len(),
                 err
             );
-            // safety guard to not let stats grow indefinitely if we lose
-            // datadog connectivity.
-            for m in self.metrics.values_mut().filter(|m| m.points.len() > 1000) {
-                info!("Dropping metric for: {}", m.metric);
-                m.points.clear();
-            }
+            self.drop_metrics();
 
             return;
         }
@@ -289,47 +328,41 @@ impl DDStatsClient {
         }
     }
 
-    #[cfg(feature = "async")]
-    pub async fn upload(&mut self) {
+    #[cfg(all(feature = "async", not(feature = "sync")))]
+    async fn upload(api_key: &str, http_client: HttpClient, payload: UploadPayload) -> bool {
         let result = {
             let api_url = format!(
                 "https://api.datadoghq.com/api/v1/series?api_key={}",
-                self.api_key
+                api_key
             );
-            let body =
-                serde_json::to_string(&Series::new(self.metrics.values())).expect("JSON of Series");
+            let body = serde_json::to_string(&Series::new(payload.metrics.iter()))
+                .expect("JSON of Series");
             let req = Request::builder()
                 .method(Method::POST)
                 .uri(&api_url)
                 .body(Body::from(body))
                 .expect("Build request");
 
-            self.http_client.request(req).await
+            http_client.request(req).await
         };
 
         if let Err(err) = result {
             warn!(
                 "Failed to send {} datadog metrics: {:?}",
-                self.metrics.len(),
+                payload.metrics.len(),
                 err
             );
-            // safety guard to not let stats grow indefinitely if we lose
-            // datadog connectivity.
-            for m in self.metrics.values_mut().filter(|m| m.points.len() > 1000) {
-                info!("Dropping metric for: {}", m.metric);
-                m.points.clear();
-            }
 
-            return;
+            return true;
         }
 
         let api_url = format!(
             "https://api.datadoghq.com/api/v1/events?api_key={}",
-            self.api_key
+            api_key
         );
 
-        let client = self.http_client.clone();
-        let calls = self.events.drain(..).map(|e| {
+        let client = http_client.clone();
+        let calls = payload.events.into_iter().map(|e| {
             let client = client.clone();
             let body = serde_json::to_string(&e).expect("JSON of Event");
             let req = Request::builder()
@@ -349,7 +382,14 @@ impl DDStatsClient {
                 warn!("Failed to send event ({}): {:?}", title, err);
             }
         }
+
+        false
     }
+}
+
+struct UploadPayload {
+    metrics: Vec<Metric>,
+    events: Vec<Event>,
 }
 
 trait DurationMillis {
