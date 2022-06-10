@@ -5,10 +5,12 @@ use futures::future;
 #[cfg(feature = "async")]
 use hyper::{client::HttpConnector, Body, Client, Method, Request};
 #[cfg(feature = "async")]
-use hyper_rustls::ConfigBuilderExt;
-use log::info;
+use rustls::{self, OwnedTrustAnchor, RootCertStore};
+
 #[cfg(any(feature = "async", feature = "sync"))]
 use log::warn;
+
+use log::info;
 
 use serde::{Serialize, Serializer};
 use std::collections::{hash_map::DefaultHasher, HashMap};
@@ -184,9 +186,20 @@ impl DDStatsClient {
 
         #[cfg(feature = "async")]
         {
+            let mut root_store = RootCertStore::empty();
+            root_store.add_server_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.0.iter().map(
+                |ta| {
+                    OwnedTrustAnchor::from_subject_spki_name_constraints(
+                        ta.subject,
+                        ta.spki,
+                        ta.name_constraints,
+                    )
+                },
+            ));
+
             let tls = rustls::ClientConfig::builder()
                 .with_safe_defaults()
-                .with_native_roots()
+                .with_root_certificates(root_store)
                 .with_no_client_auth();
 
             // Prepare the HTTPS connector
