@@ -6,15 +6,15 @@ use futures::future;
 use hyper::{client::HttpConnector, Body, Client, Method, Request};
 #[cfg(feature = "async")]
 use hyper_rustls::ConfigBuilderExt;
+use log::info;
+#[cfg(any(feature = "async", feature = "sync"))]
+use log::warn;
 
 use serde::Serialize;
 use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::hash::{Hash, Hasher};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
-#[macro_use]
-extern crate lolog;
 
 static GLOBAL_CLIENT: OnceCell<Mutex<DDStatsClient>> = OnceCell::new();
 
