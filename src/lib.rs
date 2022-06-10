@@ -10,7 +10,7 @@ use tracing::info;
 #[cfg(any(feature = "async", feature = "sync"))]
 use tracing::warn;
 
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::hash::{Hash, Hasher};
 use std::sync::Mutex;
@@ -87,17 +87,22 @@ struct Metric {
 }
 
 #[derive(Serialize, Clone, Debug, Default)]
-struct Event {
-    title: String,
-    text: String,
-    host: Option<String>,
-    tags: Vec<String>,
+pub struct Event {
+    pub title: String,
+    pub text: String,
+    pub host: Option<String>,
+    pub tags: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    alert_type: Option<AlertType>,
+    pub alert_type: Option<AlertType>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    aggregation_key: Option<String>,
+    pub aggregation_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    source_type_name: Option<String>,
+    pub source_type_name: Option<String>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "system_time_to_epoch_s"
+    )]
+    pub date_happened: Option<SystemTime>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -262,7 +267,7 @@ impl DDStatsClient {
         self.add_metric(name, value, Some(MetricType::count), Some(interval_secs))
     }
 
-    pub fn event(&mut self, title: &str, text: &str, alert_type: AlertType) {
+    pub fn event(&mut self, title: &str, text: &str, alert_type: AlertType) -> &mut Event {
         let e = Event {
             title: title.into(),
             text: text.into(),
@@ -272,6 +277,8 @@ impl DDStatsClient {
             ..Default::default()
         };
         self.events.push(e);
+
+        self.events.last_mut().unwrap()
     }
 
     #[cfg(all(feature = "async", not(feature = "sync")))]
@@ -410,6 +417,19 @@ pub fn now_millis() -> u64 {
         .duration_since(UNIX_EPOCH)
         .expect("Time went backwards")
         .to_millis()
+}
+
+fn system_time_to_epoch_s<S: Serializer>(
+    time: &Option<SystemTime>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    let seconds = time.and_then(|t| t.duration_since(UNIX_EPOCH).ok().map(|d| d.as_secs()));
+
+    if let Some(seconds) = seconds {
+        return serializer.serialize_u64(seconds);
+    }
+
+    serializer.serialize_none()
 }
 
 #[cfg(test)]
