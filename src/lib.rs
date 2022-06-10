@@ -7,6 +7,8 @@ use hyper::{client::HttpConnector, Body, Client, Method, Request};
 #[cfg(feature = "async")]
 use hyper_rustls::ConfigBuilderExt;
 use tracing::info;
+#[cfg(any(feature = "async", feature = "sync"))]
+use tracing::warn;
 
 use serde::Serialize;
 use std::collections::{hash_map::DefaultHasher, HashMap};
