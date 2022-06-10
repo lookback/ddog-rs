@@ -463,5 +463,18 @@ mod tests {
              \"host\":\"myhost\",\"tags\":[\"environment:production\",\"foo:true\"]}\
              ]}"
         );
+
+        let event = c.event("Test", "Foo", AlertType::info);
+        event.date_happened = Some(
+            SystemTime::UNIX_EPOCH
+                .checked_add(Duration::from_secs(10))
+                .unwrap(),
+        );
+        event.aggregation_key = Some("foo-bar".to_owned());
+
+        let event = c.event("Test-2", "Foo", AlertType::info);
+        event.aggregation_key = Some("foo-bar".to_owned());
+        let s = serde_json::to_string(&c.events).unwrap();
+        assert_eq!(s, "[{\"title\":\"Test\",\"text\":\"Foo\",\"host\":\"myhost\",\"tags\":[\"environment:production\",\"foo:true\"],\"alert_type\":\"info\",\"aggregation_key\":\"foo-bar\",\"date_happened\":10},{\"title\":\"Test-2\",\"text\":\"Foo\",\"host\":\"myhost\",\"tags\":[\"environment:production\",\"foo:true\"],\"alert_type\":\"info\",\"aggregation_key\":\"foo-bar\"}]");
     }
 }
