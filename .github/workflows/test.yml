@@ -22,10 +22,16 @@ jobs:
         with:
           command: fmt
           args: -- --check
-      - name: Run Clippy
+      - name: Run Clippy Sync
         uses: actions-rs/cargo@v1
         with:
           command: clippy
+          args: --features sync
+      - name: Run Clippy Async
+        uses: actions-rs/cargo@v1
+        with:
+          command: clippy
+          args: --features async
   doc:
     name: Docs
     runs-on: ubuntu-latest
@@ -42,7 +48,7 @@ jobs:
           command: doc
           args: --no-deps
 
-  build_and_test:
+  build_and_test_sync:
     name: Test
     runs-on: ubuntu-latest
     env:
@@ -65,6 +71,7 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: test
+          args: --features sync
 
   build_and_test_async:
     name: Test
