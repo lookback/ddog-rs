@@ -49,7 +49,7 @@ jobs:
           args: --no-deps
 
   build_and_test_sync:
-    name: Test
+    name: Test Sync
     runs-on: ubuntu-latest
     env:
       RUST_BACKTRACE: "1"
@@ -61,12 +61,6 @@ jobs:
         with:
           toolchain: 1.46.0
           override: true
-      # this check is to catch compilation warnings that should be treated as errors
-      # which are not caught if we only rely on the next test step.
-      - name: Check
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
       - name: Test
         uses: actions-rs/cargo@v1
         with:
@@ -74,7 +68,7 @@ jobs:
           args: --features sync
 
   build_and_test_async:
-    name: Test
+    name: Test Async
     runs-on: ubuntu-latest
     env:
       RUST_BACKTRACE: "1"
