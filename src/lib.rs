@@ -274,6 +274,7 @@ impl DDStatsClient {
         self.events.push(e);
     }
 
+    #[cfg(all(feature = "async", not(feature = "sync")))]
     fn prepare_payload(&mut self) -> UploadPayload {
         let metrics = self.metrics.values().cloned().collect();
         let events = self.events.drain(..).collect();
@@ -281,6 +282,7 @@ impl DDStatsClient {
         UploadPayload { metrics, events }
     }
 
+    #[cfg(any(feature = "async", feature = "sync"))]
     fn drop_metrics(&mut self) {
         // safety guard to not let stats grow indefinitely if we lose
         // datadog connectivity.
@@ -387,6 +389,7 @@ impl DDStatsClient {
     }
 }
 
+#[cfg(all(feature = "async", not(feature = "sync")))]
 struct UploadPayload {
     metrics: Vec<Metric>,
     events: Vec<Event>,
