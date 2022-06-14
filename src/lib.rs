@@ -64,14 +64,14 @@ pub async fn upload() {
         (api_key, client, payload)
     };
 
-    let should_clean = DDStatsClient::upload(&api_key, client, payload).await;
+    let success = DDStatsClient::upload(&api_key, client, payload).await;
 
-    if should_clean {
+    {
         let mut ddog = match GLOBAL_CLIENT.get() {
             Some(c) => c.lock().unwrap(),
             None => return,
         };
-        ddog.drop_metrics();
+        ddog.clear_metrics(success);
     }
 }
 
@@ -303,11 +303,22 @@ impl DDStatsClient {
     }
 
     #[cfg(any(feature = "async", feature = "sync"))]
-    fn drop_metrics(&mut self) {
+    /// Clear stored metrics.
+    ///
+    /// If `all` is `true` we clear all datapoints for every metric, this is suitable after a
+    /// successful upload. If `all` is `false` we clear only metrics with a large amount of
+    /// datapoints.
+    fn clear_metrics(&mut self, all: bool) {
         // safety guard to not let stats grow indefinitely if we lose
         // datadog connectivity.
-        for m in self.metrics.values_mut().filter(|m| m.points.len() > 1000) {
-            info!("Dropping metric for: {}", m.metric);
+        for m in self
+            .metrics
+            .values_mut()
+            .filter(|m| all || m.points.len() > 1000)
+        {
+            if !all {
+                info!("Dropping metric for: {}", m.metric);
+            }
             m.points.clear();
         }
     }
@@ -330,7 +341,7 @@ impl DDStatsClient {
                 self.metrics.len(),
                 err
             );
-            self.drop_metrics();
+            self.clear_metrics(false);
 
             return;
         }
@@ -375,7 +386,7 @@ impl DDStatsClient {
                 err
             );
 
-            return true;
+            return false;
         }
 
         let api_url = format!(
@@ -405,7 +416,7 @@ impl DDStatsClient {
             }
         }
 
-        false
+        true
     }
 }
 
