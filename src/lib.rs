@@ -38,8 +38,7 @@ pub fn add_tag(tag: &str) {
         None => return,
     };
 
-    let tag_name = tag.find(':').map(|i| &tag[0..i]).unwrap_or(&tag);
-    ddog.add_tag(tag_name);
+    ddog.add_tag(tag);
 }
 
 pub fn send<F: FnOnce(&mut DDStatsClient)>(send: F) {
@@ -264,7 +263,11 @@ impl DDStatsClient {
     }
 
     pub fn add_tag(&mut self, tag: &str) {
-        self.tags.retain(|t| !t.starts_with(tag));
+        let tag_name = tag.split(':').next().unwrap_or(&tag);
+
+        // Remove any previous tags with this name
+        self.tags.retain(|t| !t.starts_with(tag_name));
+
         self.tags.push(tag.into());
     }
 
@@ -500,5 +503,31 @@ mod tests {
         event.aggregation_key = Some("foo-bar".to_owned());
         let s = serde_json::to_string(&c.events).unwrap();
         assert_eq!(s, "[{\"title\":\"Test\",\"text\":\"Foo\",\"host\":\"myhost\",\"tags\":[\"environment:production\",\"foo:true\"],\"alert_type\":\"info\",\"aggregation_key\":\"foo-bar\",\"date_happened\":10},{\"title\":\"Test-2\",\"text\":\"Foo\",\"host\":\"myhost\",\"tags\":[\"environment:production\",\"foo:true\"],\"alert_type\":\"info\",\"aggregation_key\":\"foo-bar\"}]");
+    }
+
+    #[test]
+    fn test_add_tag_removes_previous_tag() {
+        let mut t = 0;
+        let millis = move || {
+            t += 1000;
+            t
+        };
+        let mut c = DDStatsClient::new(
+            "test",
+            "123",
+            "myhost",
+            vec!["environment:production".into()],
+            Box::new(millis),
+        );
+        c.add_tag("foo:bar");
+        c.add_tag("foo:not_bar");
+        c.gauge("gauge_me", 10.0);
+        let s = serde_json::to_string(&Series::new(c.metrics.values())).unwrap();
+        assert_eq!(
+            s,
+            "{\"series\":[\
+             {\"metric\":\"test.gauge_me\",\"points\":[[1.0,10.0]],\
+             \"host\":\"myhost\",\"tags\":[\"environment:production\",\"foo:not_bar\"]}]}"
+        );
     }
 }
