@@ -276,16 +276,16 @@ impl DDStatsClient {
         }
     }
 
-    fn get_metric(&mut self, name: &str, extra_tags: &[String]) -> &mut Metric {
+    fn get_metric(&mut self, mangled: &str, extra_tags: &[String]) -> &mut Metric {
         let mut hasher = DefaultHasher::new();
-        name.hash(&mut hasher);
+        mangled.hash(&mut hasher);
         extra_tags.hash(&mut hasher);
         let key = hasher.finish();
 
         let m = self.metrics.entry(key).or_default();
 
         if m.metric.is_empty() {
-            m.metric = format!("{}.{}", self.namespace, mangle_safe(name));
+            m.metric = mangled.to_string();
         }
         if m.host.is_none() {
             m.host = Some(self.host.clone());
