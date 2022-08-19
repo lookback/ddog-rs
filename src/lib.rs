@@ -162,6 +162,21 @@ fn mangle_safe(s: &str) -> String {
     x
 }
 
+pub struct Tagger<'a> {
+    metric: &'a mut Metric,
+}
+
+impl<'a> Tagger<'a> {
+    pub fn add_tag(&mut self, tag: &str) {
+        let tag_name = tag.split(':').next().unwrap_or(&tag);
+
+        // Remove any previous tags with this name
+        self.metric.tags.retain(|t| !t.starts_with(tag_name));
+
+        self.metric.tags.push(tag.into());
+    }
+}
+
 impl DDStatsClient {
     pub fn new(
         namespace: &str,
@@ -250,7 +265,7 @@ impl DDStatsClient {
         value: f64,
         metric_type: Option<MetricType>,
         interval: Option<f64>,
-    ) {
+    ) -> Tagger<'_> {
         let now_secs = (self.fn_millis)() as f64 / 1_000.0;
         let metric = self.get_metric(name);
         metric.points.push((now_secs, value));
@@ -260,6 +275,8 @@ impl DDStatsClient {
         if interval.is_some() && metric.interval.is_none() {
             metric.interval = interval;
         }
+
+        Tagger { metric }
     }
 
     pub fn add_tag(&mut self, tag: &str) {
@@ -271,15 +288,15 @@ impl DDStatsClient {
         self.tags.push(tag.into());
     }
 
-    pub fn gauge(&mut self, name: &str, value: f64) {
+    pub fn gauge(&mut self, name: &str, value: f64) -> Tagger {
         self.add_metric(name, value, None, None)
     }
 
-    pub fn rate(&mut self, name: &str, value: f64, interval_secs: f64) {
+    pub fn rate(&mut self, name: &str, value: f64, interval_secs: f64) -> Tagger {
         self.add_metric(name, value, Some(MetricType::rate), Some(interval_secs))
     }
 
-    pub fn count(&mut self, name: &str, value: f64, interval_secs: f64) {
+    pub fn count(&mut self, name: &str, value: f64, interval_secs: f64) -> Tagger {
         self.add_metric(name, value, Some(MetricType::count), Some(interval_secs))
     }
 
