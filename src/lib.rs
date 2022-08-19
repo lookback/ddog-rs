@@ -163,7 +163,12 @@ fn mangle_safe(s: &str) -> String {
 }
 
 pub struct Tagger<'a> {
-    metric: &'a mut Metric,
+    client: &'a mut DDStatsClient,
+    mangled: String,
+    value: f64,
+    metric_type: Option<MetricType>,
+    interval: Option<f64>,
+    extra_tags: Vec<String>,
 }
 
 impl<'a> Tagger<'a> {
@@ -171,9 +176,40 @@ impl<'a> Tagger<'a> {
         let tag_name = tag.split(':').next().unwrap_or(&tag);
 
         // Remove any previous tags with this name
-        self.metric.tags.retain(|t| !t.starts_with(tag_name));
+        self.extra_tags.retain(|t| !t.starts_with(tag_name));
 
-        self.metric.tags.push(tag.into());
+        self.extra_tags.push(tag.into());
+    }
+
+    /// Explicitly update the metric.
+    ///
+    /// This is not necessary since it's also done in the drop trait.
+    pub fn commit(self) {
+        // rely on drop trait
+    }
+
+    fn do_update_metric(&mut self) {
+        let now_secs = (self.client.fn_millis)() as f64 / 1_000.0;
+
+        let metric = self.client.get_metric(&self.mangled, &self.extra_tags);
+
+        metric.points.push((now_secs, self.value));
+
+        if self.metric_type.is_some() && metric.metric_type.is_none() {
+            metric.metric_type = Some(MetricType::rate);
+        }
+        if self.interval.is_some() && metric.interval.is_none() {
+            metric.interval = self.interval;
+        }
+        if !self.extra_tags.is_empty() {
+            metric.tags.append(&mut self.extra_tags);
+        }
+    }
+}
+
+impl<'a> Drop for Tagger<'a> {
+    fn drop(&mut self) {
+        self.do_update_metric();
     }
 }
 
@@ -240,13 +276,14 @@ impl DDStatsClient {
         }
     }
 
-    fn get_metric(&mut self, name: &str) -> &mut Metric {
+    fn get_metric(&mut self, name: &str, extra_tags: &[String]) -> &mut Metric {
         let mut hasher = DefaultHasher::new();
         name.hash(&mut hasher);
+        extra_tags.hash(&mut hasher);
         let key = hasher.finish();
-        let m = self.metrics.entry(key).or_insert_with(|| Metric {
-            ..Default::default()
-        });
+
+        let m = self.metrics.entry(key).or_default();
+
         if m.metric.is_empty() {
             m.metric = format!("{}.{}", self.namespace, mangle_safe(name));
         }
@@ -266,17 +303,16 @@ impl DDStatsClient {
         metric_type: Option<MetricType>,
         interval: Option<f64>,
     ) -> Tagger<'_> {
-        let now_secs = (self.fn_millis)() as f64 / 1_000.0;
-        let metric = self.get_metric(name);
-        metric.points.push((now_secs, value));
-        if metric_type.is_some() && metric.metric_type.is_none() {
-            metric.metric_type = Some(MetricType::rate);
-        }
-        if interval.is_some() && metric.interval.is_none() {
-            metric.interval = interval;
-        }
+        let mangled = format!("{}.{}", self.namespace, mangle_safe(name));
 
-        Tagger { metric }
+        Tagger {
+            client: self,
+            mangled,
+            value,
+            metric_type,
+            interval,
+            extra_tags: Vec::new(),
+        }
     }
 
     pub fn add_tag(&mut self, tag: &str) {
