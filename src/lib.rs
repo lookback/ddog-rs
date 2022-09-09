@@ -441,7 +441,7 @@ impl DDStatsClient {
         match result {
             Ok(result) => {
                 if !result.status().is_success() {
-                    warn!(
+                    info!(
                         "Datadog returned non-200 status code for metrics upload: {} with body: {:?}",
                         result.status(),
                         result.body()
@@ -484,7 +484,7 @@ impl DDStatsClient {
             match result {
                 Ok(result) => {
                     if !result.status().is_success() {
-                        warn!(
+                        info!(
                             "Datadog returned non-200 status code for event({}) upload: {} with body: {:?}",
                             title,
                             result.status(),
