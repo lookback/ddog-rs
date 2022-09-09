@@ -54,7 +54,10 @@ pub async fn upload() {
     let (api_key, client, payload) = {
         let mut ddog = match GLOBAL_CLIENT.get() {
             Some(c) => c.lock().unwrap(),
-            None => return,
+            None => {
+                info!("No client configured when uploading");
+                return;
+            }
         };
         let payload = ddog.prepare_payload();
         let client = ddog.http_client.clone();
@@ -435,14 +438,25 @@ impl DDStatsClient {
             http_client.request(req).await
         };
 
-        if let Err(err) = result {
-            warn!(
-                "Failed to send {} datadog metrics: {:?}",
-                payload.metrics.len(),
-                err
-            );
+        match result {
+            Ok(result) => {
+                if !result.status().is_success() {
+                    warn!(
+                        "Datadog returned non-200 status code for metrics upload: {} with body: {:?}",
+                        result.status(),
+                        result.body()
+                    );
+                }
+            }
+            Err(err) => {
+                warn!(
+                    "Failed to send {} datadog metrics: {:?}",
+                    payload.metrics.len(),
+                    err
+                );
 
-            return false;
+                return false;
+            }
         }
 
         let api_url = format!(
@@ -467,8 +481,22 @@ impl DDStatsClient {
         let results = future::join_all(futs).await;
 
         for (title, result) in titles.into_iter().zip(results) {
-            if let Err(err) = result {
-                warn!("Failed to send event ({}): {:?}", title, err);
+            match result {
+                Ok(result) => {
+                    if !result.status().is_success() {
+                        warn!(
+                            "Datadog returned non-200 status code for event({}) upload: {} with body: {:?}",
+                            title,
+                            result.status(),
+                            result.body()
+                        );
+                    }
+                }
+                Err(err) => {
+                    warn!("Failed to send event({}): {:?}", title, err);
+
+                    return false;
+                }
             }
         }
 
