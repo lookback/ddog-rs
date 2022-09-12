@@ -179,6 +179,10 @@ fn batch_metrics<'a>(
         current_size += estimated_size;
     }
 
+    if !accumulator.is_empty() {
+        result.push(accumulator);
+    }
+
     result
 }
 
