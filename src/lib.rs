@@ -399,8 +399,9 @@ impl DDStatsClient {
         interval: Option<f64>,
     ) -> Tagger<'_> {
         let mangled = format!("{}.{}", self.namespace, mangle_safe(name));
+        // TODO: Change this assert to 20, when we fix this.
         assert!(
-            mangled.len() <= 20,
+            mangled.len() <= 40,
             "Metric names(including namespace) cannot exceed 20 bytes"
         );
 
