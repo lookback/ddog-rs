@@ -13,10 +13,15 @@ use tracing::warn;
 use tracing::info;
 
 use serde::{Serialize, Serializer};
+use std::borrow::Cow;
 use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::hash::{Hash, Hasher};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+// The real max size is 3.2MB, but we leave some headroom because there's also a limit of 62914560
+// bytes when the data is compressed to account for. We cannot estimate the compressed size well.
+const DATADOG_V1_METRIC_MAX_SIZE: usize = 3_000_000;
 
 static GLOBAL_CLIENT: OnceCell<Mutex<DDStatsClient>> = OnceCell::new();
 
@@ -88,6 +93,97 @@ struct Metric {
     #[serde(skip_serializing_if = "Option::is_none")]
     host: Option<String>,
     tags: Vec<String>,
+}
+
+impl Metric {
+    /// Attempt to estimate the uncompressed size of this item when serialized to JSON.
+    fn estimate_serialized_size(&self) -> usize {
+        // Example payload
+        // {
+        //     "metric":"test.rate_me_abc_per",
+        //     "points":[[3.0,20.0]],
+        //     "type":"rate",
+        //     "interval":2.0,
+        //     "host":"myhost",
+        //     "tags":["environment:production","foo:true"]
+        // }
+        let mut size = 2; // Curly braces
+
+        // For each required key:
+        //  * The length in bytes of the key
+        //  * 2 `"`, 1 `:` and 1 `,`.
+        size += ["metric", "points", "tags"]
+            .iter()
+            .map(|key| key.len() + 4)
+            .sum::<usize>();
+
+        // Metric length + two quotes
+        size += self.metric.len() + 2;
+        size += self
+            .points
+            .iter()
+            .map(|(t, v)| ((t.log10() as usize) + 2 + 1) + ((v.log10() as usize) + 2 + 1) + 2)
+            .sum::<usize>()
+            + 3;
+        // Length of each tag + two quotes and a comma, wrapped in an array([])
+        size += self.tags.iter().map(|tag| tag.len() + 3).sum::<usize>() + 2;
+
+        // Length of host field, if present
+        size += self
+            .host
+            .as_ref()
+            .map(|host| "host".len() + 4 + host.len())
+            .unwrap_or(0);
+
+        // Length of interval, if present.
+        size += self
+            .interval
+            .map(|int| "interval".len() + 4 + (int.log10() as usize) + 2 + 1)
+            .unwrap_or(0);
+
+        // Length of metric type, if present. "count" is the longest type and is thus used.
+        size += self
+            .metric_type
+            .map(|_| "type".len() + 4 + "count".len() + 2)
+            .unwrap_or(0);
+
+        size
+    }
+}
+
+/// Batch several metrics into batches that will not exceed Datadog's limits.
+///
+/// Each batch will be smaller than `max_batch_size` bytes as estimated by [`Metric::estimate_serialized_size`].
+/// **Assumption:** No individual metric will be larger than [`max_batch_size`].
+fn batch_metrics<'a>(
+    metrics: impl IntoIterator<Item = Cow<'a, Metric>>,
+    max_batch_size: usize,
+) -> Vec<Vec<Cow<'a, Metric>>> {
+    let mut result = vec![];
+    let mut accumulator = vec![];
+    let mut current_size = 0;
+
+    for m in metrics {
+        let estimated_size = m.estimate_serialized_size();
+
+        if estimated_size + current_size >= max_batch_size {
+            // Create a batch
+            result.push(accumulator.clone());
+            accumulator.clear();
+            current_size = 0;
+            assert!(estimated_size < max_batch_size);
+        }
+
+        accumulator.push(m);
+
+        current_size += estimated_size;
+    }
+
+    if !accumulator.is_empty() {
+        result.push(accumulator);
+    }
+
+    result
 }
 
 #[derive(Serialize, Clone, Debug, Default)]
@@ -307,6 +403,11 @@ impl DDStatsClient {
         interval: Option<f64>,
     ) -> Tagger<'_> {
         let mangled = format!("{}.{}", self.namespace, mangle_safe(name));
+        // TODO: Change this assert to 20, when we fix this.
+        assert!(
+            mangled.len() <= 40,
+            "Metric names(including namespace) cannot exceed 20 bytes"
+        );
 
         Tagger {
             client: self,
@@ -384,25 +485,35 @@ impl DDStatsClient {
 
     #[cfg(all(feature = "sync", not(feature = "async")))]
     pub fn upload(&mut self) {
-        let result = {
-            let api_url = format!(
-                "https://api.datadoghq.com/api/v1/series?api_key={}",
-                self.api_key
-            );
-            ureq::post(&api_url).send_json(
-                serde_json::to_value(&Series::new(self.metrics.values())).expect("JSON of Series"),
-            )
-        };
+        use std::ops::Deref;
 
-        if let Err(err) = result {
-            warn!(
-                "Failed to send {} datadog metrics: {:?}",
-                self.metrics.len(),
-                err
-            );
-            self.clear_metrics(false);
+        let batches = batch_metrics(
+            self.metrics.values().map(Cow::Borrowed),
+            DATADOG_V1_METRIC_MAX_SIZE,
+        );
 
-            return;
+        for batch in batches {
+            let result = {
+                let api_url = format!(
+                    "https://api.datadoghq.com/api/v1/series?api_key={}",
+                    self.api_key
+                );
+                ureq::post(&api_url).send_json(
+                    serde_json::to_value(&Series::new(batch.iter().map(Deref::deref)))
+                        .expect("JSON of Series"),
+                )
+            };
+
+            if let Err(err) = result {
+                warn!(
+                    "Failed to send {} datadog metrics: {:?}",
+                    self.metrics.len(),
+                    err
+                );
+                self.clear_metrics(false);
+
+                return;
+            }
         }
 
         let api_url = format!(
@@ -422,12 +533,19 @@ impl DDStatsClient {
 
     #[cfg(all(feature = "async", not(feature = "sync")))]
     async fn upload(api_key: &str, http_client: HttpClient, payload: UploadPayload) -> bool {
-        let result = {
-            let api_url = format!(
-                "https://api.datadoghq.com/api/v1/series?api_key={}",
-                api_key
-            );
-            let body = serde_json::to_string(&Series::new(payload.metrics.iter()))
+        // Metrics
+
+        use std::ops::Deref;
+        let batches = batch_metrics(
+            payload.metrics.into_iter().map(Cow::Owned),
+            DATADOG_V1_METRIC_MAX_SIZE,
+        );
+        let api_url = format!(
+            "https://api.datadoghq.com/api/v1/series?api_key={}",
+            api_key
+        );
+        let futures = batches.into_iter().map(|batch| {
+            let body = serde_json::to_string(&Series::new(batch.iter().map(Deref::deref)))
                 .expect("JSON of Series");
             let req = Request::builder()
                 .method(Method::POST)
@@ -435,30 +553,30 @@ impl DDStatsClient {
                 .body(Body::from(body))
                 .expect("Build request");
 
-            http_client.request(req).await
-        };
+            http_client.request(req)
+        });
+        let results = future::join_all(futures).await;
 
-        match result {
-            Ok(result) => {
-                if !result.status().is_success() {
-                    info!(
-                        "Datadog returned non-200 status code for metrics upload: {} with body: {:?}",
-                        result.status(),
-                        result.body()
-                    );
+        for result in results {
+            match result {
+                Ok(result) => {
+                    if !result.status().is_success() {
+                        info!(
+                            "Datadog returned non-200 status code for metrics upload: {} with body: {:?}",
+                            result.status(),
+                            result.body()
+                        );
+                    }
                 }
-            }
-            Err(err) => {
-                warn!(
-                    "Failed to send {} datadog metrics: {:?}",
-                    payload.metrics.len(),
-                    err
-                );
+                Err(err) => {
+                    warn!("Failed to send datadog metrics: {:?}", err);
 
-                return false;
+                    return false;
+                }
             }
         }
 
+        // Events
         let api_url = format!(
             "https://api.datadoghq.com/api/v1/events?api_key={}",
             api_key
