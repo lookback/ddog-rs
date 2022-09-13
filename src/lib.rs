@@ -230,7 +230,7 @@ struct Series<'a> {
 
 impl<'a> Series<'a> {
     fn new(metrics: impl Iterator<Item = &'a Metric>) -> Self {
-        let mut series = metrics.filter(|m| m.points.len() != 0).collect::<Vec<_>>();
+        let mut series = metrics.filter(|m| !m.points.is_empty()).collect::<Vec<_>>();
         (&mut series[..]).sort_by_key(|m| &m.metric);
         Series { series }
     }
@@ -272,7 +272,7 @@ pub struct Tagger<'a> {
 
 impl<'a> Tagger<'a> {
     pub fn add_tag(&mut self, tag: &str) {
-        let tag_name = tag.split(':').next().unwrap_or(&tag);
+        let tag_name = tag.split(':').next().unwrap_or(tag);
 
         // Remove any previous tags with this name
         self.extra_tags.retain(|t| !t.starts_with(tag_name));
@@ -420,7 +420,7 @@ impl DDStatsClient {
     }
 
     pub fn add_tag(&mut self, tag: &str) {
-        let tag_name = tag.split(':').next().unwrap_or(&tag);
+        let tag_name = tag.split(':').next().unwrap_or(tag);
 
         // Remove any previous tags with this name
         self.tags.retain(|t| !t.starts_with(tag_name));
