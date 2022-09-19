@@ -171,7 +171,7 @@ fn batch_metrics<'a>(
             result.push(accumulator.clone());
             accumulator.clear();
             current_size = 0;
-            assert!(estimated_size < max_batch_size);
+            assert!(estimated_size < max_batch_size, "Estimated size({}) for a single metric({}) was greater than the max batch size({})", estimated_size, m.metric, max_batch_size);
         }
 
         accumulator.push(m);
@@ -301,7 +301,14 @@ impl<'a> Tagger<'a> {
             metric.interval = self.interval;
         }
         if !self.extra_tags.is_empty() {
-            metric.tags.append(&mut self.extra_tags);
+            // NB: This is a bit quadratic, but the input size here is always small. Using BTreeSet
+            // might be possible instead, but care needs to be taken as we rely on the order of
+            // tags when storing metrics.
+            for extra_tag in self.extra_tags.drain(..) {
+                if !metric.tags.contains(&extra_tag) {
+                    metric.tags.push(extra_tag);
+                }
+            }
         }
     }
 }
@@ -727,6 +734,36 @@ mod tests {
             "{\"series\":[\
              {\"metric\":\"test.gauge_me\",\"points\":[[1.0,10.0]],\
              \"host\":\"myhost\",\"tags\":[\"environment:production\",\"foo:not_bar\"]}]}"
+        );
+    }
+
+    #[test]
+    #[cfg(any(feature = "async", feature = "sync"))]
+    fn test_add_extra_tag_repeatedly_should_not_include_it_twice() {
+        let mut t = 0;
+        let millis = move || {
+            t += 1000;
+            t
+        };
+        let mut c = DDStatsClient::new(
+            "test",
+            "123",
+            "myhost",
+            vec!["environment:production".into()],
+            Box::new(millis),
+        );
+        c.add_tag("foo:bar");
+        c.add_tag("foo:not_bar");
+        c.gauge("gauge_me", 10.0).add_tag("extra:1");
+        c.clear_metrics(true);
+        c.gauge("gauge_me", 20.0).add_tag("extra:1");
+
+        let s = serde_json::to_string(&Series::new(c.metrics.values())).unwrap();
+        assert_eq!(
+            s,
+            "{\"series\":[\
+             {\"metric\":\"test.gauge_me\",\"points\":[[2.0,20.0]],\
+             \"host\":\"myhost\",\"tags\":[\"environment:production\",\"foo:not_bar\",\"extra:1\"]}]}"
         );
     }
 }
