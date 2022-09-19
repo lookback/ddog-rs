@@ -547,11 +547,11 @@ impl DDStatsClient {
             payload.metrics.into_iter().map(Cow::Owned),
             DATADOG_V1_METRIC_MAX_SIZE,
         );
-        let api_url = format!("http://localhost:4444/post/anything?api_key={}", api_key);
+        let api_url = format!(
+            "https://api.datadoghq.com/api/v1/series?api_key={}",
+            api_key
+        );
         let futures = batches.into_iter().map(|batch| {
-            for m in batch.iter() {
-                info!("{} with {} tags", m.metric, m.tags.len());
-            }
             let body = serde_json::to_string(&Series::new(batch.iter().map(Deref::deref)))
                 .expect("JSON of Series");
             let req = Request::builder()
@@ -584,7 +584,10 @@ impl DDStatsClient {
         }
 
         // Events
-        let api_url = format!("http://localhost:4444/post/anything?api_key={}", api_key);
+        let api_url = format!(
+            "https://api.datadoghq.com/api/v1/events?api_key={}",
+            api_key
+        );
 
         let client = http_client.clone();
         let calls = payload.events.into_iter().map(|e| {
