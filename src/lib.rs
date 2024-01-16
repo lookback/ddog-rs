@@ -3,9 +3,15 @@ use once_cell::sync::{Lazy, OnceCell};
 #[cfg(feature = "async")]
 use futures::future;
 #[cfg(feature = "async")]
-use hyper::{client::HttpConnector, Body, Client, Method, Request};
+use hyper::{Method, Request};
 #[cfg(feature = "async")]
-use rustls::{self, OwnedTrustAnchor, RootCertStore};
+use hyper_util::client::legacy::connect::HttpConnector;
+#[cfg(feature = "async")]
+use hyper_util::client::legacy::Client;
+#[cfg(feature = "async")]
+use hyper_util::rt::TokioExecutor;
+#[cfg(feature = "async")]
+use rustls;
 
 #[cfg(any(feature = "async", feature = "sync"))]
 use tracing::warn;
@@ -237,7 +243,7 @@ impl<'a> Series<'a> {
 }
 
 #[cfg(feature = "async")]
-type HttpClient = Client<hyper_rustls::HttpsConnector<HttpConnector>>;
+type HttpClient = Client<hyper_rustls::HttpsConnector<HttpConnector>, String>;
 
 pub struct DDStatsClient {
     namespace: String,
@@ -342,19 +348,14 @@ impl DDStatsClient {
 
         #[cfg(feature = "async")]
         {
-            let mut root_store = RootCertStore::empty();
-            root_store.add_server_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.0.iter().map(
-                |ta| {
-                    OwnedTrustAnchor::from_subject_spki_name_constraints(
-                        ta.subject,
-                        ta.spki,
-                        ta.name_constraints,
-                    )
-                },
-            ));
+            let mut root_store = rustls::RootCertStore::empty();
+            root_store.extend(
+                webpki_roots::TLS_SERVER_ROOTS
+                    .iter()
+                    .map(|ta| ta.to_owned()),
+            );
 
             let tls = rustls::ClientConfig::builder()
-                .with_safe_defaults()
                 .with_root_certificates(root_store)
                 .with_no_client_auth();
 
@@ -366,7 +367,7 @@ impl DDStatsClient {
                 .build();
 
             // Build the hyper client from the HTTPS connector.
-            let http_client: Client<_, hyper::Body> = Client::builder().build(https);
+            let http_client: Client<_, String> = Client::builder(TokioExecutor::new()).build(https);
 
             DDStatsClient {
                 namespace: mangle_safe(namespace),
@@ -557,7 +558,7 @@ impl DDStatsClient {
             let req = Request::builder()
                 .method(Method::POST)
                 .uri(&api_url)
-                .body(Body::from(body))
+                .body(body)
                 .expect("Build request");
 
             http_client.request(req)
@@ -596,7 +597,7 @@ impl DDStatsClient {
             let req = Request::builder()
                 .method(Method::POST)
                 .uri(&api_url)
-                .body(Body::from(body))
+                .body(body)
                 .expect("Build request");
 
             (e.title, client.request(req))
