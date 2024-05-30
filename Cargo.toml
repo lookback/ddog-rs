@@ -20,5 +20,5 @@ rustls = { version = "*", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
-ureq = { version = "=2.1.0", features = ["json"], optional = true }
+ureq = { version = "2.9.7", features = ["json"], optional = true }
 webpki-roots = { version = "0.26", optional = true }
